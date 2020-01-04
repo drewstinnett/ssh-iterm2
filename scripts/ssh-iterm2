@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+import sys
+import logging
+import argparse
+import yaml
+import webcolors
+import shutil
+import re
+import subprocess
+import atexit
+import contextlib
+import os
+
+# Using some modules and ideas from:
+# https://github.com/wookayin/iterm-tab-color
+
+# Constants
+OSC = b'\033]'
+
+
+@contextlib.contextmanager
+def tmux_passthrough(buf):
+
+    # Unsure about this, if set to false, things break everywhere
+    is_tmux = True
+    #   if 'TMUX' in os.environ:
+    #       is_tmux = True
+    #   else:
+    #       is_tmux = False
+
+    global OSC
+
+    if is_tmux:
+        buf.write(b'\033Ptmux;')
+        OSC = b'\033\033]'
+
+    yield
+
+    if is_tmux:
+        buf.write(b'\033\\')
+        OSC = b'\033]'
+        buf.flush()
+
+
+def parse_args():
+    """Parse the arguments."""
+    parser = argparse.ArgumentParser(
+        description="Wrap SSH up and change the tab color based on the target")
+    parser.add_argument('target', help="SSH Server to connect to")
+
+    return parser.parse_args()
+
+
+def get_real_ssh():
+    return shutil.which('ssh')
+
+
+def set_tab_color(rgb):
+
+    red, green, blue = rgb
+
+    buf = sys.stdout.buffer
+
+    with tmux_passthrough(buf):
+        buf.write(OSC + b'6;1;bg;red;brightness;%d\a' % red)
+        buf.write(OSC + b'6;1;bg;green;brightness;%d\a' % green)
+        buf.write(OSC + b'6;1;bg;blue;brightness;%d\a' % blue)
+
+
+def reset_tab_color():
+    buf = sys.stdout.buffer
+
+    with tmux_passthrough(buf):
+        buf.write(OSC + b'6;1;bg;*;default\a')
+
+
+def convert_color_to_rgb(color):
+    if color.startswith('#'):
+        return list(webcolors.hex_to_rgb(color))
+    else:
+        return list(webcolors.name_to_rgb(color))
+
+
+def get_config():
+    with open(os.path.expanduser("~/.iterm2_ssh.yaml"), 'r') as stream:
+        return yaml.safe_load(stream)
+
+
+def get_tab_color(target):
+    config = get_config()
+    for regex, color in config['tab_colors']['regexes'].items():
+        if re.match(r"%s" % regex, target):
+            return color
+    return config['tab_colors']['default']
+
+
+def main():
+    args = parse_args()
+
+    # Always reset the tab color when the script exists
+    atexit.register(reset_tab_color)
+
+    color = get_tab_color(args.target)
+    logging.debug(f"Found the color for {args.target} is {color}")
+    rgb = convert_color_to_rgb(color)
+    set_tab_color(rgb)
+    subprocess.call([get_real_ssh(), args.target])
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
